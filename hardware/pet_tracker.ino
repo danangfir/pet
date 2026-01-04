@@ -1,5 +1,5 @@
 /*
- * 🐾 Pet Tracker ESP32 + GPS
+ * 🐾 Pet Tracker ESP32 + GPS + ThingSpeak
  * 
  * Hardware:
  * - ESP32 DevKit V1
@@ -25,14 +25,18 @@
 const char* ssid = "NAMA_WIFI_ANDA";
 const char* password = "PASSWORD_WIFI_ANDA";
 
-// Server URL - GANTI DENGAN URL RAILWAY ANDA
-const char* serverUrl = "https://YOUR-APP.railway.app/api/location";
+// ThingSpeak Configuration - GANTI DENGAN API KEY ANDA
+const char* thingspeakServer = "api.thingspeak.com";
+const char* writeAPIKey = "YOUR_WRITE_API_KEY";  // Dari ThingSpeak Channel
 
-// Device ID
-const char* deviceId = "pet-tracker-001";
+// Field mapping:
+// Field 1 = Latitude
+// Field 2 = Longitude
+// Field 3 = Battery
+// Field 4 = Speed (optional)
 
-// Interval pengiriman data (dalam milidetik)
-const unsigned long SEND_INTERVAL = 10000; // 10 detik
+// Interval pengiriman data (ThingSpeak free: minimal 15 detik)
+const unsigned long SEND_INTERVAL = 20000; // 20 detik
 
 // ==================== VARIABEL ====================
 
@@ -42,6 +46,7 @@ HardwareSerial GPSSerial(2); // UART2
 unsigned long lastSendTime = 0;
 float currentLat = 0;
 float currentLng = 0;
+float currentSpeed = 0;
 float batteryLevel = 100.0;
 
 // ==================== SETUP ====================
@@ -50,12 +55,15 @@ void setup() {
   Serial.begin(115200);
   GPSSerial.begin(9600, SERIAL_8N1, 16, 17); // RX=16, TX=17
   
-  Serial.println("\n🐾 Pet Tracker Starting...");
+  Serial.println("\n========================================");
+  Serial.println("   Pet Tracker + ThingSpeak Starting...");
+  Serial.println("========================================");
   
   // Konek ke WiFi
   connectWiFi();
   
-  Serial.println("📡 Waiting for GPS signal...");
+  Serial.println("Waiting for GPS signal...");
+  Serial.println("Tip: Bawa ke outdoor untuk sinyal lebih baik");
 }
 
 // ==================== LOOP ====================
@@ -67,6 +75,7 @@ void loop() {
       if (gps.location.isValid()) {
         currentLat = gps.location.lat();
         currentLng = gps.location.lng();
+        currentSpeed = gps.speed.kmph();
       }
     }
   }
@@ -76,26 +85,25 @@ void loop() {
     lastSendTime = millis();
     
     if (currentLat != 0 && currentLng != 0) {
-      sendLocation(currentLat, currentLng);
+      sendToThingSpeak(currentLat, currentLng, batteryLevel, currentSpeed);
     } else {
-      Serial.println("⏳ GPS belum mendapatkan sinyal...");
+      Serial.println("GPS belum mendapatkan sinyal...");
       
-      // Untuk testing tanpa GPS, kirim lokasi dummy
-      // Uncomment baris berikut untuk testing:
-      // sendLocation(-6.2088, 106.8456);
+      // Untuk TESTING tanpa GPS hardware, uncomment baris berikut:
+      // sendToThingSpeak(-6.2088, 106.8456, batteryLevel, 0);
     }
   }
   
   // Simulasi battery drain
   if (batteryLevel > 0) {
-    batteryLevel -= 0.001;
+    batteryLevel -= 0.01;
   }
 }
 
 // ==================== FUNGSI WiFi ====================
 
 void connectWiFi() {
-  Serial.print("📶 Connecting to WiFi");
+  Serial.print("Connecting to WiFi");
   WiFi.begin(ssid, password);
   
   int attempts = 0;
@@ -106,44 +114,52 @@ void connectWiFi() {
   }
   
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n✅ WiFi Connected!");
+    Serial.println("\n[OK] WiFi Connected!");
     Serial.print("IP Address: ");
     Serial.println(WiFi.localIP());
   } else {
-    Serial.println("\n❌ WiFi Connection Failed!");
+    Serial.println("\n[ERROR] WiFi Connection Failed!");
+    Serial.println("Check SSID and Password");
   }
 }
 
-// ==================== FUNGSI KIRIM DATA ====================
+// ==================== FUNGSI THINGSPEAK ====================
 
-void sendLocation(float lat, float lng) {
+void sendToThingSpeak(float lat, float lng, float battery, float speed) {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("❌ WiFi disconnected, reconnecting...");
+    Serial.println("[ERROR] WiFi disconnected, reconnecting...");
     connectWiFi();
     return;
   }
   
   HTTPClient http;
-  http.begin(serverUrl);
-  http.addHeader("Content-Type", "application/json");
   
-  // Buat JSON payload
-  String jsonPayload = "{";
-  jsonPayload += "\"device_id\":\"" + String(deviceId) + "\",";
-  jsonPayload += "\"lat\":" + String(lat, 6) + ",";
-  jsonPayload += "\"lng\":" + String(lng, 6) + ",";
-  jsonPayload += "\"battery\":" + String(batteryLevel, 1);
-  jsonPayload += "}";
+  // Build ThingSpeak URL
+  String url = "http://api.thingspeak.com/update?api_key=";
+  url += writeAPIKey;
+  url += "&field1=" + String(lat, 6);
+  url += "&field2=" + String(lng, 6);
+  url += "&field3=" + String(battery, 1);
+  url += "&field4=" + String(speed, 1);
   
-  Serial.println("📤 Sending: " + jsonPayload);
+  Serial.println("\n--- Sending to ThingSpeak ---");
+  Serial.println("LAT: " + String(lat, 6));
+  Serial.println("LNG: " + String(lng, 6));
+  Serial.println("Battery: " + String(battery, 1) + "%");
+  Serial.println("Speed: " + String(speed, 1) + " km/h");
   
-  int httpCode = http.POST(jsonPayload);
+  http.begin(url);
+  int httpCode = http.GET();
   
   if (httpCode > 0) {
     String response = http.getString();
-    Serial.println("✅ Response: " + response);
+    if (response == "0") {
+      Serial.println("[WARNING] ThingSpeak rate limit (wait 15 sec)");
+    } else {
+      Serial.println("[OK] Entry ID: " + response);
+    }
   } else {
-    Serial.println("❌ Error: " + http.errorToString(httpCode));
+    Serial.println("[ERROR] HTTP Error: " + http.errorToString(httpCode));
   }
   
   http.end();

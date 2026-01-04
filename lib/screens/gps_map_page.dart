@@ -1,6 +1,7 @@
 import 'dart:ui';
-import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 import '../services/location_service.dart';
 import '../services/pet_service.dart';
 import '../models/pet.dart';
@@ -15,13 +16,16 @@ class GpsMapPage extends StatefulWidget {
 
 class _GpsMapPageState extends State<GpsMapPage> with TickerProviderStateMixin {
   final LocationService _locationService = LocationService();
+  final MapController _mapController = MapController();
   late AnimationController _pulseController;
+  bool _followMode = true;
   
   @override
   void initState() {
     super.initState();
     _locationService.addListener(_onLocationChanged);
     _locationService.startTracking();
+    _locationService.fetchLocationHistory(results: 100);
     
     _pulseController = AnimationController(
       duration: const Duration(seconds: 2),
@@ -39,40 +43,116 @@ class _GpsMapPageState extends State<GpsMapPage> with TickerProviderStateMixin {
 
   void _onLocationChanged() {
     setState(() {});
+    
+    // Auto-move map to new location if follow mode is enabled
+    if (_followMode && _locationService.currentLocation != null) {
+      final loc = _locationService.currentLocation!;
+      try {
+        _mapController.move(
+          LatLng(loc.latitude, loc.longitude),
+          _mapController.camera.zoom,
+        );
+      } catch (_) {}
+    }
+  }
+
+  void _centerOnLocation() {
+    if (_locationService.currentLocation != null) {
+      final loc = _locationService.currentLocation!;
+      _mapController.move(
+        LatLng(loc.latitude, loc.longitude),
+        16.0,
+      );
+      setState(() => _followMode = true);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final location = _locationService.currentLocation;
+    final history = _locationService.locationHistory;
     final selectedPet = widget.petService.pets.isNotEmpty 
         ? widget.petService.selectedPet 
         : null;
 
+    // Default location (Jakarta) if no data
+    final currentLatLng = location != null
+        ? LatLng(location.latitude, location.longitude)
+        : const LatLng(-6.2088, 106.8456);
+
     return Scaffold(
       body: Stack(
         children: [
-          // Background peta dengan grid
-          _buildMapBackground(),
-          
-          // Location marker
-          if (location != null)
-            Center(
-              child: _buildAnimatedMarker(selectedPet),
+          // Real Map with OpenStreetMap
+          FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: currentLatLng,
+              initialZoom: 16.0,
+              minZoom: 3.0,
+              maxZoom: 19.0,
+              onPositionChanged: (pos, hasGesture) {
+                if (hasGesture) {
+                  setState(() => _followMode = false);
+                }
+              },
             ),
+            children: [
+              // OpenStreetMap Tile Layer
+              TileLayer(
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.example.pet_tracker_app',
+              ),
+              
+              // History Trail (Polyline)
+              if (history.isNotEmpty)
+                PolylineLayer(
+                  polylines: [
+                    Polyline(
+                      points: history
+                          .where((h) => h.latitude != 0 && h.longitude != 0)
+                          .map((h) => LatLng(h.latitude, h.longitude))
+                          .toList(),
+                      color: Colors.blue.withOpacity(0.7),
+                      strokeWidth: 4.0,
+                    ),
+                  ],
+                ),
+              
+              // History Points (small circles)
+              if (history.isNotEmpty)
+                CircleLayer(
+                  circles: history
+                      .where((h) => h.latitude != 0 && h.longitude != 0)
+                      .map((h) => CircleMarker(
+                            point: LatLng(h.latitude, h.longitude),
+                            radius: 5,
+                            color: Colors.blue.withOpacity(0.5),
+                            borderColor: Colors.blue,
+                            borderStrokeWidth: 1,
+                          ))
+                      .toList(),
+                ),
+              
+              // Current Location Marker
+              if (location != null)
+                MarkerLayer(
+                  markers: [
+                    Marker(
+                      point: currentLatLng,
+                      width: 80,
+                      height: 80,
+                      child: _buildAnimatedMarker(selectedPet),
+                    ),
+                  ],
+                ),
+            ],
+          ),
           
-          // Header dengan info GPS
+          // Header with GPS info
           _buildHeader(location),
           
-          // Info card di bawah
-          if (location != null)
-            Positioned(
-              bottom: 100,
-              left: 20,
-              right: 20,
-              child: _buildLocationCard(location, selectedPet),
-            ),
-          
-          // Status dan tombol refresh
+          // Control buttons (right side)
           Positioned(
             top: 120,
             right: 20,
@@ -80,9 +160,14 @@ class _GpsMapPageState extends State<GpsMapPage> with TickerProviderStateMixin {
               children: [
                 _buildStatusBadge(),
                 const SizedBox(height: 8),
+                // Refresh button
                 FloatingActionButton(
                   mini: true,
-                  onPressed: _locationService.fetchLatestLocation,
+                  heroTag: 'refresh',
+                  onPressed: () {
+                    _locationService.fetchLatestLocation();
+                    _locationService.fetchLocationHistory(results: 100);
+                  },
                   backgroundColor: Theme.of(context).cardColor,
                   child: _locationService.isLoading
                       ? const SizedBox(
@@ -92,30 +177,35 @@ class _GpsMapPageState extends State<GpsMapPage> with TickerProviderStateMixin {
                         )
                       : Icon(Icons.refresh, color: Theme.of(context).primaryColor),
                 ),
+                const SizedBox(height: 8),
+                // Center on location button
+                FloatingActionButton(
+                  mini: true,
+                  heroTag: 'center',
+                  onPressed: _centerOnLocation,
+                  backgroundColor: _followMode 
+                      ? Theme.of(context).primaryColor 
+                      : Theme.of(context).cardColor,
+                  child: Icon(
+                    Icons.my_location,
+                    color: _followMode 
+                        ? Colors.white 
+                        : Theme.of(context).primaryColor,
+                  ),
+                ),
               ],
             ),
           ),
+          
+          // Info card at bottom
+          if (location != null)
+            Positioned(
+              bottom: 100,
+              left: 20,
+              right: 20,
+              child: _buildLocationCard(location, selectedPet, history.length),
+            ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildMapBackground() {
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            const Color(0xFF1a1a2e),
-            const Color(0xFF16213e),
-            const Color(0xFF0f3460),
-          ],
-        ),
-      ),
-      child: CustomPaint(
-        painter: GridPainter(),
-        child: Container(),
       ),
     );
   }
@@ -137,28 +227,30 @@ class _GpsMapPageState extends State<GpsMapPage> with TickerProviderStateMixin {
         children: [
           const Icon(Icons.satellite_alt, color: Colors.greenAccent, size: 28),
           const SizedBox(width: 12),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'GPS Pet Tracker',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'GPS Pet Tracker',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
-              ),
-              Text(
-                location != null
-                    ? 'Lat: ${location.latitude.toStringAsFixed(4)}, Lng: ${location.longitude.toStringAsFixed(4)}'
-                    : 'Menunggu sinyal GPS...',
-                style: TextStyle(
-                  color: Colors.white.withOpacity(0.7),
-                  fontSize: 12,
+                Text(
+                  location != null
+                      ? 'Lat: ${location.latitude.toStringAsFixed(4)}, Lng: ${location.longitude.toStringAsFixed(4)}'
+                      : 'Menunggu data dari ThingSpeak...',
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.7),
+                    fontSize: 12,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ],
       ),
@@ -179,38 +271,27 @@ class _GpsMapPageState extends State<GpsMapPage> with TickerProviderStateMixin {
             Transform.scale(
               scale: scale,
               child: Container(
-                width: 120,
-                height: 120,
+                width: 60,
+                height: 60,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   color: Colors.greenAccent.withOpacity(opacity * 0.3),
                 ),
               ),
             ),
-            // Inner pulse
-            Transform.scale(
-              scale: 1.0 + (_pulseController.value * 0.15),
-              child: Container(
-                width: 80,
-                height: 80,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Colors.greenAccent.withOpacity(opacity * 0.5),
-                ),
-              ),
-            ),
             // Main marker
             Container(
-              width: 60,
-              height: 60,
+              width: 40,
+              height: 40,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: Colors.greenAccent,
+                border: Border.all(color: Colors.white, width: 3),
                 boxShadow: [
                   BoxShadow(
                     color: Colors.greenAccent.withOpacity(0.5),
-                    blurRadius: 20,
-                    spreadRadius: 5,
+                    blurRadius: 10,
+                    spreadRadius: 2,
                   ),
                 ],
               ),
@@ -222,11 +303,11 @@ class _GpsMapPageState extends State<GpsMapPage> with TickerProviderStateMixin {
                         errorBuilder: (_, __, ___) => const Icon(
                           Icons.pets,
                           color: Colors.white,
-                          size: 30,
+                          size: 20,
                         ),
                       ),
                     )
-                  : const Icon(Icons.pets, color: Colors.white, size: 30),
+                  : const Icon(Icons.pets, color: Colors.white, size: 20),
             ),
           ],
         );
@@ -242,11 +323,17 @@ class _GpsMapPageState extends State<GpsMapPage> with TickerProviderStateMixin {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
         color: hasError
-            ? Colors.red.withOpacity(0.8)
+            ? Colors.red.withOpacity(0.9)
             : isConnected
-                ? Colors.green.withOpacity(0.8)
-                : Colors.orange.withOpacity(0.8),
+                ? Colors.green.withOpacity(0.9)
+                : Colors.orange.withOpacity(0.9),
         borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.3),
+            blurRadius: 5,
+          ),
+        ],
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -278,18 +365,18 @@ class _GpsMapPageState extends State<GpsMapPage> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildLocationCard(LocationData location, Pet? pet) {
+  Widget _buildLocationCard(LocationData location, Pet? pet, int historyCount) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(20),
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
         child: Container(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
             gradient: LinearGradient(
               colors: [
-                Colors.white.withOpacity(0.15),
-                Colors.white.withOpacity(0.05),
+                Colors.white.withOpacity(0.2),
+                Colors.white.withOpacity(0.1),
               ],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
@@ -304,8 +391,8 @@ class _GpsMapPageState extends State<GpsMapPage> with TickerProviderStateMixin {
                 children: [
                   // Pet avatar
                   Container(
-                    width: 50,
-                    height: 50,
+                    width: 45,
+                    height: 45,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       border: Border.all(color: Colors.greenAccent, width: 2),
@@ -334,17 +421,32 @@ class _GpsMapPageState extends State<GpsMapPage> with TickerProviderStateMixin {
                           pet?.name ?? 'Pet Tracker',
                           style: const TextStyle(
                             color: Colors.white,
-                            fontSize: 18,
+                            fontSize: 16,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'Device: ${location.deviceId}',
-                          style: TextStyle(
-                            color: Colors.white.withOpacity(0.7),
-                            fontSize: 12,
-                          ),
+                        Row(
+                          children: [
+                            Icon(Icons.speed, color: Colors.white54, size: 14),
+                            const SizedBox(width: 4),
+                            Text(
+                              '${location.speed.toStringAsFixed(1)} km/h',
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(0.7),
+                                fontSize: 12,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Icon(Icons.timeline, color: Colors.white54, size: 14),
+                            const SizedBox(width: 4),
+                            Text(
+                              '$historyCount titik',
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(0.7),
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
@@ -356,14 +458,14 @@ class _GpsMapPageState extends State<GpsMapPage> with TickerProviderStateMixin {
                       Icon(
                         _getBatteryIcon(location.battery),
                         color: _getBatteryColor(location.battery),
-                        size: 28,
+                        size: 24,
                       ),
                       Text(
                         '${location.battery.toInt()}%',
                         style: TextStyle(
                           color: _getBatteryColor(location.battery),
                           fontWeight: FontWeight.bold,
-                          fontSize: 12,
+                          fontSize: 11,
                         ),
                       ),
                     ],
@@ -371,33 +473,33 @@ class _GpsMapPageState extends State<GpsMapPage> with TickerProviderStateMixin {
                 ],
               ),
               
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
               
               // Coordinates
               Container(
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
                   color: Colors.black.withOpacity(0.3),
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(10),
                 ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [
                     _buildCoordItem('LAT', location.latitude.toStringAsFixed(6)),
-                    Container(width: 1, height: 30, color: Colors.white24),
+                    Container(width: 1, height: 25, color: Colors.white24),
                     _buildCoordItem('LNG', location.longitude.toStringAsFixed(6)),
                   ],
                 ),
               ),
               
-              const SizedBox(height: 12),
+              const SizedBox(height: 8),
               
               // Last update
               Text(
-                'Update terakhir: ${_formatTimestamp(location.timestamp)}',
+                'Update: ${_formatTimestamp(location.timestamp)}',
                 style: TextStyle(
                   color: Colors.white.withOpacity(0.5),
-                  fontSize: 11,
+                  fontSize: 10,
                 ),
               ),
             ],
@@ -414,16 +516,16 @@ class _GpsMapPageState extends State<GpsMapPage> with TickerProviderStateMixin {
           label,
           style: TextStyle(
             color: Colors.white.withOpacity(0.5),
-            fontSize: 10,
+            fontSize: 9,
             fontWeight: FontWeight.bold,
           ),
         ),
-        const SizedBox(height: 4),
+        const SizedBox(height: 2),
         Text(
           value,
           style: const TextStyle(
             color: Colors.white,
-            fontSize: 14,
+            fontSize: 13,
             fontFamily: 'monospace',
           ),
         ),
@@ -448,34 +550,9 @@ class _GpsMapPageState extends State<GpsMapPage> with TickerProviderStateMixin {
   String _formatTimestamp(String timestamp) {
     try {
       final dt = DateTime.parse(timestamp);
-      return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}';
+      return '${dt.day}/${dt.month} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}';
     } catch (_) {
       return 'N/A';
     }
   }
-}
-
-// Custom painter untuk grid background
-class GridPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.white.withOpacity(0.05)
-      ..strokeWidth = 1;
-
-    const spacing = 30.0;
-    
-    // Vertical lines
-    for (double x = 0; x < size.width; x += spacing) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    }
-    
-    // Horizontal lines
-    for (double y = 0; y < size.height; y += spacing) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
