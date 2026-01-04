@@ -5,6 +5,7 @@ import 'package:latlong2/latlong.dart';
 import '../services/location_service.dart';
 import '../services/pet_service.dart';
 import '../models/pet.dart';
+import 'gps_statistics_page.dart';
 
 class GpsMapPage extends StatefulWidget {
   final PetService petService;
@@ -192,6 +193,22 @@ class _GpsMapPageState extends State<GpsMapPage> with TickerProviderStateMixin {
                         ? Colors.white 
                         : Theme.of(context).primaryColor,
                   ),
+                ),
+                const SizedBox(height: 8),
+                // Statistics button
+                FloatingActionButton(
+                  mini: true,
+                  heroTag: 'stats',
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const GpsStatisticsPage(),
+                      ),
+                    );
+                  },
+                  backgroundColor: Theme.of(context).cardColor,
+                  child: Icon(Icons.bar_chart, color: Theme.of(context).primaryColor),
                 ),
               ],
             ),
